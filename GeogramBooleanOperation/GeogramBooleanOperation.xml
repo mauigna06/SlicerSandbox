@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<executable>
+  <category>Surface Models</category>
+  <title>Robust Boolean Operations</title>
+  <description><![CDATA[Use Geogram to perform boolean operations.]]></description>
+  <version>$Revision</version>
+  <documentation-url>https://github.com/BrunoLevy/geogram/blob/main/src/examples/geogram/boolean_operations/main.cpp</documentation-url>
+  <license/>
+  <contributor>Mauro I. Dominguez</contributor>
+  <acknowledgements><![CDATA[Ad-Honorem work by Medical Software]]></acknowledgements>
+  <parameters>
+    <label>IO</label>
+    <description><![CDATA[Input/output parameters]]></description>
+    <geometry fileExtensions=".ply" type="model">
+      <name>ModelA</name>
+      <label>Model A</label>
+      <channel>input</channel>
+      <index>1</index>
+      <description><![CDATA[Model A]]></description>
+    </geometry>
+    <geometry fileExtensions=".ply" type="model">
+      <name>ModelB</name>
+      <label>Model B</label>
+      <channel>input</channel>
+      <index>2</index>
+      <description><![CDATA[Model B]]></description>
+    </geometry>
+    <string-enumeration>
+      <name>BooleanOperation</name>
+      <longflag>BooleanOperation</longflag>
+      <label>Boolean Operation</label>
+      <description><![CDATA[Union, Intersection or Difference.]]></description>
+      <default>operation=union</default>
+      <element>operation=union</element>
+      <element>operation=intersection</element>
+      <element>operation=difference</element>
+    </string-enumeration>
+    <geometry fileExtensions=".ply" type="model">
+      <name>ResultingModel</name>
+      <label>Resulting Model</label>
+      <channel>output</channel>
+      <index>3</index>
+      <description><![CDATA[Resulting Model]]></description>
+    </geometry>
+  </parameters>
+</executable>

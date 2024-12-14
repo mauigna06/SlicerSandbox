@@ -24,6 +24,7 @@ add_subdirectory(CharacterizeTransformMatrix)
 add_subdirectory(CombineModels)
 add_subdirectory(CurvedPlanarReformat)
 add_subdirectory(DocumentationTools)
+add_subdirectory(GeogramBooleanOperation)
 if (Slicer_VERSION VERSION_LESS 5.1)
   # Latest Slicer 5.1 and above has ITK-Snap Label Description File importer built in
   add_subdirectory(ImportItkSnapLabel)
