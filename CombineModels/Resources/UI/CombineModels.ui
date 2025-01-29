@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>279</width>
-    <height>372</height>
+    <width>329</width>
+    <height>423</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -145,6 +145,32 @@
           </widget>
          </item>
         </layout>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QComboBox" name="backendSelectorComboBox">
+        <item>
+         <property name="text">
+          <string>vtkbool</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>manifold</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>blender</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_5">
+        <property name="text">
+         <string>Backend</string>
+        </property>
        </widget>
       </item>
      </layout>

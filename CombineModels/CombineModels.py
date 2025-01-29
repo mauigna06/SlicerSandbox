@@ -92,6 +92,8 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.ui.operationDifferenceRadioButton.connect("toggled(bool)", lambda toggled, op="difference": self.operationButtonToggled(op))
     self.ui.operationDifference2RadioButton.connect("toggled(bool)", lambda toggled, op="difference2": self.operationButtonToggled(op))
 
+    self.ui.backendSelectorComboBox.currentTextChanged.connect(self.updateParameterNodeFromGUI)
+
     # Buttons
     self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
     self.ui.toggleVisibilityButton.connect('clicked(bool)', self.onToggleVisibilityButton)
@@ -198,6 +200,8 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     self.ui.toggleVisibilityButton.enabled = (self._parameterNode.GetNodeReference("OutputModel") is not None)
 
+    self.ui.backendSelectorComboBox.setCurrentText(self._parameterNode.GetParameter("Backend"))
+
     # All the GUI updates are done
     self._updatingGUIFromParameterNode = False
 
@@ -215,6 +219,7 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self._parameterNode.SetNodeReferenceID("InputModelA", self.ui.inputModelASelector.currentNodeID)
     self._parameterNode.SetNodeReferenceID("InputModelB", self.ui.inputModelBSelector.currentNodeID)
     self._parameterNode.SetNodeReferenceID("OutputModel", self.ui.outputModelSelector.currentNodeID)
+    self._parameterNode.SetParameter("Backend", self.ui.backendSelectorComboBox.currentText)
 
     self._parameterNode.EndModify(wasModified)
 
@@ -237,7 +242,8 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode.GetNodeReference("InputModelA"),
         self._parameterNode.GetNodeReference("InputModelB"),
         self._parameterNode.GetNodeReference("OutputModel"),
-        self._parameterNode.GetParameter("Operation"))
+        self._parameterNode.GetParameter("Operation"),
+        self._parameterNode.GetParameter("Backend"))
 
     except Exception as e:
       slicer.util.errorDisplay("Failed to compute results: "+str(e))
@@ -285,8 +291,10 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     """
     if not parameterNode.GetParameter("Operation"):
       parameterNode.SetParameter("Operation", "union")
+    if not parameterNode.GetParameter("Backend"):
+      parameterNode.SetParameter("Backend", "vtkbool")
 
-  def process(self, inputModelA, inputModelB, outputModel, operation):
+  def process(self, inputModelA, inputModelB, outputModel, operation, backend="vtkbool"):
     """
     Run the processing algorithm.
     Can be used without GUI widget.
@@ -294,6 +302,7 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     :param inputModelB: second input model node
     :param outputModel: result model node, if empty then a new output node will be created
     :param operation: union, intersection, difference, difference2
+    :param backend: vtkbool, manifold, blender
     """
 
     if not inputModelA or not inputModelB or not outputModel:
@@ -303,53 +312,170 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     startTime = time.time()
     logging.info('Processing started')
 
-    import vtkSlicerCombineModelsModuleLogicPython as vtkbool
+    if backend == "vtkbool":
+      import vtkSlicerCombineModelsModuleLogicPython as vtkbool
 
-    combine = vtkbool.vtkPolyDataBooleanFilter()
+      combine = vtkbool.vtkPolyDataBooleanFilter()
 
-    if operation == 'union':
-      combine.SetOperModeToUnion()
-    elif operation == 'intersection':
-      combine.SetOperModeToIntersection()
-    elif operation == 'difference':
-      combine.SetOperModeToDifference()
-    elif operation == 'difference2':
-      combine.SetOperModeToDifference2()
+      if operation == 'union':
+        combine.SetOperModeToUnion()
+      elif operation == 'intersection':
+        combine.SetOperModeToIntersection()
+      elif operation == 'difference':
+        combine.SetOperModeToDifference()
+      elif operation == 'difference2':
+        combine.SetOperModeToDifference2()
+      else:
+        raise ValueError("Invalid operation: "+operation)
+
+      if inputModelA.GetParentTransformNode() == outputModel.GetParentTransformNode():
+        combine.SetInputConnection(0, inputModelA.GetPolyDataConnection())
+      else:
+        transformToOutput = vtk.vtkGeneralTransform()
+        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelA.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
+        transformer = vtk.vtkTransformPolyDataFilter()
+        transformer.SetTransform(transformToOutput)
+        transformer.SetInputConnection(inputModelA.GetPolyDataConnection())
+        combine.SetInputConnection(0, transformer.GetOutputPort())
+
+      if inputModelB.GetParentTransformNode() == outputModel.GetParentTransformNode():
+        combine.SetInputConnection(1, inputModelB.GetPolyDataConnection())
+      else:
+        transformToOutput = vtk.vtkGeneralTransform()
+        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelB.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
+        transformer = vtk.vtkTransformPolyDataFilter()
+        transformer.SetTransform(transformToOutput)
+        transformer.SetInputConnection(inputModelB.GetPolyDataConnection())
+        combine.SetInputConnection(1, transformer.GetOutputPort())
+
+      # These parameters might be useful to expose:
+      # combine.MergeRegsOn()  # default off
+      # combine.DecPolysOff()  # default on
+      combine.Update()
+      outputModel.SetAndObservePolyData(combine.GetOutput())
+
     else:
-      raise ValueError("Invalid operation: "+operation)
+      if not self.installBooleanOperationsAlternativeBackend():
+        return
 
-    if inputModelA.GetParentTransformNode() == outputModel.GetParentTransformNode():
-      combine.SetInputConnection(0, inputModelA.GetPolyDataConnection())
-    else:
-      transformToOutput = vtk.vtkGeneralTransform()
-      slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelA.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
-      transformer = vtk.vtkTransformPolyDataFilter()
-      transformer.SetTransform(transformToOutput)
-      transformer.SetInputConnection(inputModelA.GetPolyDataConnection())
-      combine.SetInputConnection(0, transformer.GetOutputPort())
+      inputModelAPolyData = vtk.vtkPolyData()
+      if inputModelA.GetParentTransformNode() == outputModel.GetParentTransformNode():
+        inputModelAPolyData.DeepCopy(inputModelA.GetMesh())
+      else:
+        transformToOutput = vtk.vtkGeneralTransform()
+        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelA.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
+        transformer = vtk.vtkTransformPolyDataFilter()
+        transformer.SetTransform(transformToOutput)
+        transformer.SetInputConnection(inputModelA.GetPolyDataConnection())
+        transformer.Update()
+        inputModelAPolyData.DeepCopy(transformer.GetOutput())
 
-    if inputModelB.GetParentTransformNode() == outputModel.GetParentTransformNode():
-      combine.SetInputConnection(1, inputModelB.GetPolyDataConnection())
-    else:
-      transformToOutput = vtk.vtkGeneralTransform()
-      slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelB.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
-      transformer = vtk.vtkTransformPolyDataFilter()
-      transformer.SetTransform(transformToOutput)
-      transformer.SetInputConnection(inputModelB.GetPolyDataConnection())
-      combine.SetInputConnection(1, transformer.GetOutputPort())
+      inputModelBPolyData = vtk.vtkPolyData()
+      if inputModelB.GetParentTransformNode() == outputModel.GetParentTransformNode():
+        inputModelBPolyData.DeepCopy(inputModelB.GetMesh())
+      else:
+        transformToOutput = vtk.vtkGeneralTransform()
+        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelB.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
+        transformer = vtk.vtkTransformPolyDataFilter()
+        transformer.SetTransform(transformToOutput)
+        transformer.SetInputConnection(inputModelB.GetPolyDataConnection())
+        transformer.Update()
+        inputModelBPolyData.DeepCopy(transformer.GetOutput())
 
-    # These parameters might be useful to expose:
-    # combine.MergeRegsOn()  # default off
-    # combine.DecPolysOff()  # default on
-    combine.Update()
-
-    outputModel.SetAndObservePolyData(combine.GetOutput())
+      outputPolyData = vtk.vtkPolyData()
+      outputPolyData.DeepCopy(
+        self.meshBooleanOperationAlternative(operation, inputModelAPolyData, inputModelBPolyData, backend="manifold")
+      )
+      outputModel.SetAndObservePolyData(outputPolyData)
+    
     outputModel.CreateDefaultDisplayNodes()
     # The filter creates a few scalars, don't show them by default, as they would be somewhat distracting
     outputModel.GetDisplayNode().SetScalarVisibility(False)
 
     stopTime = time.time()
     logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
+
+  @staticmethod
+  def installBooleanOperationsAlternativeBackend(force=False):
+      # install required trimesh package
+      try:
+          import trimesh
+      except ModuleNotFoundError as e:
+          if force or slicer.util.confirmOkCancelDisplay("This function requires 'trimesh' Python package. Click OK to install it now."):
+              slicer.util.pip_install("trimesh")
+          else:
+              return False
+          
+      # install required manifold3d package
+      try:
+          import manifold3d
+      except ModuleNotFoundError as e:
+          if force or slicer.util.confirmOkCancelDisplay("This function requires 'manifold3d' Python package. Click OK to install it now."):
+              slicer.util.pip_install("manifold3d") # needs c++ compilation
+          else:
+              return False
+          
+      # install required networkx package
+      try:
+          import networkx
+      except ModuleNotFoundError as e:
+          if force or slicer.util.confirmOkCancelDisplay("This function requires 'networkx' Python package. Click OK to install it now."):
+              slicer.util.pip_install("networkx")
+          else:
+              return False
+      
+      # install required pyvista package
+      try:
+          import pyvista
+      except ModuleNotFoundError as e:
+          if force or slicer.util.confirmOkCancelDisplay("This function requires 'pyvista' Python package. Click OK to install it now."):
+              slicer.util.pip_install("pyvista")
+          else:
+              return False
+      
+      return True
+  
+  def toTrimesh(self, polyData, doRepairMesh=True):
+    """
+    Converts the input VTK mesh to trimesh format.
+    """
+    import pyvista as pv
+    pv_mesh = pv.PolyData(polyData)
+    pv_mesh = pv_mesh.extract_surface().triangulate()
+    faces_as_array = pv_mesh.faces.reshape((pv_mesh.n_faces, 4))[:, 1:]
+    import trimesh
+    mesh = trimesh.Trimesh(pv_mesh.points, faces_as_array)
+    if doRepairMesh:
+        mesh.remove_duplicate_faces()
+        mesh.remove_unreferenced_vertices()
+        mesh.remove_degenerate_faces()
+        mesh.fill_holes()
+        mesh.fix_normals()
+    return mesh
+
+  def meshBooleanOperationAlternative(self, operation, model1PolyData, model2PolyData, backend="manifold"):
+    """Apply given boolean operation between two models. The output overwrites the 1st input model"""
+    model1_trimesh = self.toTrimesh(model1PolyData)
+    model2_trimesh = self.toTrimesh(model2PolyData)
+    meshes = [model1_trimesh, model2_trimesh]
+
+    import trimesh
+    if operation == "union":
+        op = trimesh.boolean.union
+    elif operation == "intersection":
+        op = trimesh.boolean.intersection
+    elif operation == "difference":
+        op = trimesh.boolean.difference
+    elif operation == "difference2":
+        op = trimesh.boolean.difference
+        meshes = [model2_trimesh, model1_trimesh]
+
+    supported_backends = ["manifold", "blender"]
+    if backend not in supported_backends:
+        backend = "manifold"
+
+    import pyvista as pv
+    return pv.wrap(op(meshes, engine=backend, check_volume=False))
 
 #
 # CombineModelsTest
