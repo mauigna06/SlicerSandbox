@@ -11,14 +11,14 @@
   <parameters>
     <label>IO</label>
     <description><![CDATA[Input/output parameters]]></description>
-    <geometry fileExtensions=".ply" type="model">
+    <geometry fileExtensions=".obj" type="model">
       <name>ModelA</name>
       <label>Model A</label>
       <channel>input</channel>
       <index>1</index>
       <description><![CDATA[Model A]]></description>
     </geometry>
-    <geometry fileExtensions=".ply" type="model">
+    <geometry fileExtensions=".obj" type="model">
       <name>ModelB</name>
       <label>Model B</label>
       <channel>input</channel>
@@ -30,12 +30,19 @@
       <longflag>BooleanOperation</longflag>
       <label>Boolean Operation</label>
       <description><![CDATA[Union, Intersection or Difference.]]></description>
-      <default>operation=union</default>
-      <element>operation=union</element>
-      <element>operation=intersection</element>
-      <element>operation=difference</element>
+      <default>union</default>
+      <element>union</element>
+      <element>intersection</element>
+      <element>difference</element>
     </string-enumeration>
-    <geometry fileExtensions=".ply" type="model">
+    <boolean>
+      <name>DoFixMeshes</name>
+      <longflag>DoFixMeshes</longflag>
+      <description><![CDATA[May increase computation time if true]]></description>
+      <label>Pre and Post process meshes</label>
+      <default>false</default>
+    </boolean>
+    <geometry fileExtensions=".obj" type="model">
       <name>ResultingModel</name>
       <label>Resulting Model</label>
       <channel>output</channel>
