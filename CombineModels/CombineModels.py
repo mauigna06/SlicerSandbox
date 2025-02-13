@@ -343,7 +343,7 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
       )
       transformer = vtk.vtkTransformPolyDataFilter()
       transformer.SetTransform(transformToOutput)
-      transformer.SetInputConnection(inputModelNode.GetMesh())
+      transformer.SetInputData(inputModelNode.GetMesh())
       transformer.Update()
       return transformer.GetOutput()
   
