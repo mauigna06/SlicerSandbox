@@ -92,6 +92,12 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.ui.operationDifferenceRadioButton.connect("toggled(bool)", lambda toggled, op="difference": self.operationButtonToggled(op))
     self.ui.operationDifference2RadioButton.connect("toggled(bool)", lambda toggled, op="difference2": self.operationButtonToggled(op))
 
+    self.ui.triangulateInputsCheckBox.connect("stateChanged(int)", self.updateParameterNodeFromGUI)
+
+    # Spin Boxes
+    self.ui.numberOfRetriesSpinBox.valueChanged.connect(self.updateParameterNodeFromGUI)
+    self.ui.randomTranslationMagnitudeSpinBox.valueChanged.connect(self.updateParameterNodeFromGUI)
+
     self.ui.backendSelectorComboBox.currentTextChanged.connect(self.updateParameterNodeFromGUI)
 
     # Buttons
@@ -200,6 +206,24 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     self.ui.toggleVisibilityButton.enabled = (self._parameterNode.GetNodeReference("OutputModel") is not None)
 
+    # translate randomly order of magnitude (value is negative by default)
+    randomTranslationMagnitude = int(self._parameterNode.GetParameter("randomTranslationMagnitude"))
+    self.ui.randomTranslationMagnitudeSpinBox.value = randomTranslationMagnitude
+
+    numberOfRetries = int(self._parameterNode.GetParameter("numberOfRetries"))
+    self.ui.numberOfRetriesSpinBox.value = numberOfRetries
+    if numberOfRetries > 0:
+      self.ui.numberOfRetriesSpinBox.toolTip = "Model B will be randomized if operation fails"
+      self.ui.randomTranslationMagnitudeSpinBox.enabled = True
+      randomTranslationAmount = 10**-randomTranslationMagnitude
+      self.ui.randomTranslationMagnitudeSpinBox.toolTip = f"If the operation fails, it will retry with a random translation of {randomTranslationAmount}"
+    else:
+      self.ui.numberOfRetriesSpinBox.toolTip = "Computation will be attempted only with exact inputs."
+      self.ui.randomTranslationMagnitudeSpinBox.enabled = False
+      self.ui.randomTranslationMagnitudeSpinBox.toolTip = "Set a number of retries to larger than 0"
+
+    self.ui.triangulateInputsCheckBox.checked = self._parameterNode.GetParameter("triangulateInputs") == "True"
+
     self.ui.backendSelectorComboBox.setCurrentText(self._parameterNode.GetParameter("Backend"))
 
     # All the GUI updates are done
@@ -219,6 +243,12 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self._parameterNode.SetNodeReferenceID("InputModelA", self.ui.inputModelASelector.currentNodeID)
     self._parameterNode.SetNodeReferenceID("InputModelB", self.ui.inputModelBSelector.currentNodeID)
     self._parameterNode.SetNodeReferenceID("OutputModel", self.ui.outputModelSelector.currentNodeID)
+
+    self._parameterNode.SetParameter("numberOfRetries", str(self.ui.numberOfRetriesSpinBox.value))
+    self._parameterNode.SetParameter("randomTranslationMagnitude", str(self.ui.randomTranslationMagnitudeSpinBox.value))
+
+    self._parameterNode.SetParameter("triangulateInputs", "true" if self.ui.triangulateInputsCheckBox.checked else "false")
+
     self._parameterNode.SetParameter("Backend", self.ui.backendSelectorComboBox.currentText)
 
     self._parameterNode.EndModify(wasModified)
@@ -243,7 +273,11 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode.GetNodeReference("InputModelB"),
         self._parameterNode.GetNodeReference("OutputModel"),
         self._parameterNode.GetParameter("Operation"),
-        self._parameterNode.GetParameter("Backend"))
+        int(self._parameterNode.GetParameter("numberOfRetries")),
+        int(self._parameterNode.GetParameter("randomTranslationMagnitude")),
+        self._parameterNode.GetParameter("triangulateInputs") == "true",
+        self._parameterNode.GetParameter("Backend")
+      )
 
     except Exception as e:
       slicer.util.errorDisplay("Failed to compute results: "+str(e))
@@ -291,6 +325,12 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     """
     if not parameterNode.GetParameter("Operation"):
       parameterNode.SetParameter("Operation", "union")
+    if not parameterNode.GetParameter("numberOfRetries"):
+      parameterNode.SetParameter("numberOfRetries", "2")
+    if not parameterNode.GetParameter("randomTranslationMagnitude"):
+      parameterNode.SetParameter("randomTranslationMagnitude", "4")
+    if not parameterNode.GetParameter("triangulateInputs"):
+      parameterNode.SetParameter("triangulateInputs", "true")
     if not parameterNode.GetParameter("Backend"):
       parameterNode.SetParameter("Backend", "vtkbool")
 
@@ -307,7 +347,168 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
       transformer.Update()
       return transformer.GetOutput()
   
-  def process(self, inputModelA, inputModelB, outputModel, operation, backend="vtkbool"):
+  def applyRandomTranslationToPolydata(self, polyData, randomTranslationOrderOfMagnitude):
+    unitVector = [vtk.vtkMath.Random()-0.5 for _ in range(3)]
+    vtk.vtkMath.Normalize(unitVector)
+    import numpy as np
+    translationVector = np.array(unitVector) * (10**-randomTranslationOrderOfMagnitude)
+    perturbationTransform = vtk.vtkTransform()
+    perturbationTransform.Translate(translationVector)
+    perturbationTransformer = vtk.vtkTransformPolyDataFilter()
+    perturbationTransformer.SetTransform(perturbationTransform)
+    perturbationTransformer.SetInputData(polyData)
+    perturbationTransformer.Update()
+    return perturbationTransformer.GetOutput()
+  
+  def doMeshesCollide(self, polydataA, polydataB):
+    collisionDetectionFilter = vtk.vtkCollisionDetectionFilter()
+    collisionDetectionFilter.SetInputData(0, polydataA)
+    collisionDetectionFilter.SetInputData(1, polydataB)
+    identityMatrix = vtk.vtkMatrix4x4()
+    collisionDetectionFilter.SetMatrix(0,identityMatrix)
+    collisionDetectionFilter.SetMatrix(1,identityMatrix)
+    collisionDetectionFilter.SetCollisionModeToFirstContact()
+    collisionDetectionFilter.Update()
+    meshesAreIntersecting = collisionDetectionFilter.GetNumberOfContacts() > 0
+    return meshesAreIntersecting
+    
+  def quickSolveBooleanOperation(self, meshA, meshB, operation):
+    polydataCombined = None
+    
+    if operation == 'union':
+      # models do not touch so we can simply append them
+      appendFilter = vtk.vtkAppendPolyData()
+      appendFilter.AddInputData(meshA)
+      appendFilter.AddInputData(meshB)
+      appendFilter.Update()
+      polydataCombined = appendFilter.GetOutput()
+    elif operation == 'intersection':
+      # models do not touch so we return an empty model
+      polydataCombined = vtk.vtkPolyData()
+    elif operation == 'difference':  # A-B
+      polydataCombined = meshA
+    elif operation == 'difference2':  # B-A
+      polydataCombined = meshB
+    
+    return polydataCombined
+  
+  def calculateSurfaceArea(self, polydata):
+    triangleFilter = vtk.vtkTriangleFilter()
+    triangleFilter.SetInputData(polydata)
+    triangleFilter.SetPassLines(0)
+    triangleFilter.Update()
+    
+    massProperties = vtk.vtkMassProperties()
+    massProperties.SetInputData(triangleFilter.GetOutput())
+    return massProperties.GetSurfaceArea()
+  
+  def getMeshesWithSimilarAreaPerTriangle(self, meshA, meshB):
+    meshAAreaPerTriangle = self.calculateSurfaceArea(meshA) / meshA.GetNumberOfCells()
+    meshBAreaPerTriangle = self.calculateSurfaceArea(meshB) / meshB.GetNumberOfCells()
+
+    linearSubdivisionFilter = vtk.vtkLinearSubdivisionFilter()
+    NEW_TRIANGLES_PER_SUBDIVISION = 4
+
+    import numpy as np
+    if meshAAreaPerTriangle >= meshBAreaPerTriangle:
+      # subdivide meshA so its area per triangle is the nearer to meshB's 
+      areaPerTriangleFactor = meshAAreaPerTriangle / meshBAreaPerTriangle
+      numberOfSubdivisions = int(np.log2(areaPerTriangleFactor)/np.log2(NEW_TRIANGLES_PER_SUBDIVISION))
+      linearSubdivisionFilter.SetInputData(meshA)
+      linearSubdivisionFilter.SetNumberOfSubdivisions(numberOfSubdivisions)
+      linearSubdivisionFilter.Update()
+      meshA = linearSubdivisionFilter.GetOutput()
+    elif meshBAreaPerTriangle > meshAAreaPerTriangle:
+      # subdivide meshB so its area per triangle is the nearer to meshA's 
+      areaPerTriangleFactor = meshBAreaPerTriangle / meshAAreaPerTriangle
+      numberOfSubdivisions = int(np.log2(areaPerTriangleFactor)/np.log2(NEW_TRIANGLES_PER_SUBDIVISION))
+      linearSubdivisionFilter.SetInputData(meshB)
+      linearSubdivisionFilter.SetNumberOfSubdivisions(numberOfSubdivisions)
+      linearSubdivisionFilter.Update()
+      meshB = linearSubdivisionFilter.GetOutput()
+    
+    return meshA, meshB
+  
+  def executeVtkboolFilter(
+    self, 
+    operation, 
+    meshA, 
+    meshB, 
+    numberOfRetries=0, 
+    randomizedTranslation=None
+  ):
+    combine = vtk.vtkPolyDataBooleanFilter()
+    if operation == 'union':
+      combine.SetOperModeToUnion()
+    elif operation == 'intersection':
+      combine.SetOperModeToIntersection()
+    elif operation == 'difference':
+      combine.SetOperModeToDifference()
+    else:
+      raise ValueError("Invalid operation: "+operation)
+    
+    combine.SetInputData(0, meshA)
+    combine.SetInputData(1, meshB)
+    combine.Update()
+
+    if combine.GetOutput().GetNumberOfPoints() > 0:
+      return combine.GetOutput()
+
+    if numberOfRetries >= 1:
+      for i in range(numberOfRetries):
+        combine.SetInputData(1, randomizedTranslation(meshB))
+        combine.Update()
+        if combine.GetOutput().GetNumberOfPoints() > 0:
+          break
+    
+    return combine.GetOutput()
+  
+  def executeGeogramFilter(self, outputModel, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
+    pass
+  
+  def executeManifoldFilter(self, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
+    result = self.meshBooleanOperationAlternative(operation, meshA, meshB, backend="manifold")
+    if result.GetNumberOfPoints() > 0:
+      return result
+
+    if numberOfRetries >= 1:
+      for i in range(numberOfRetries):
+        result = self.meshBooleanOperationAlternative(operation, meshA, randomizedTranslation(meshB), backend="manifold")
+        if result.GetNumberOfPoints() > 0:
+          break
+    
+    return result
+  
+  def executeManifoldFilter(self, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
+    result = self.meshBooleanOperationAlternative(operation, meshA, meshB, backend="blender")
+    if result.GetNumberOfPoints() > 0:
+      return result
+
+    if numberOfRetries >= 1:
+      for i in range(numberOfRetries):
+        result = self.meshBooleanOperationAlternative(operation, meshA, randomizedTranslation(meshB), backend="blender")
+        if result.GetNumberOfPoints() > 0:
+          break
+    
+    return result
+  
+  def triangulateMesh(self, polyData):
+    triangleFilter = vtk.vtkTriangleFilter()
+    triangleFilter.SetInputData(polyData)
+    triangleFilter.Update()
+    return triangleFilter.GetOutput()
+  
+  def process(
+    self, 
+    inputModelA, 
+    inputModelB, 
+    outputModel, 
+    operation, 
+    numberOfRetries = 2, 
+    randomTranslationMagnitude = 4, 
+    triangulateInputs = True,
+    backend = "vtkbool"
+  ):
     """
     Run the processing algorithm.
     Can be used without GUI widget.
@@ -315,6 +516,9 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     :param inputModelB: second input model node
     :param outputModel: result model node, if empty then a new output node will be created
     :param operation: union, intersection, difference, difference2
+    :param numberOfRetries: number of retries if operation fails
+    :param randomTranslationMagnitude: order of magnitude of random translation
+    :param triangulateInputs: if True, input meshes will be triangulated
     :param backend: vtkbool, geogram, manifold, blender
     """
 
@@ -325,7 +529,6 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     startTime = time.time()
     logging.info('Processing started')
 
-    
     # check if operation is valid
     if operation not in ['union','intersection','difference','difference2']:
       raise ValueError("Invalid operation: "+operation)
@@ -333,164 +536,66 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     # swap input models for difference2 operation
     if operation == 'difference2':
         inputModelA, inputModelB = inputModelB, inputModelA
-
+        operation = 'difference'
+    
     # meshes to be combined
     meshA = self.getInputModelMeshInOutputModelCoordinateSystem(inputModelA, outputModel)
     meshB = self.getInputModelMeshInOutputModelCoordinateSystem(inputModelB, outputModel)
 
-
-
-    # do the randomized translation
-
-
+    if triangulateInputs:
+      meshA = self.triangulateMesh(meshA)
+      meshB = self.triangulateMesh(meshB)
+    
+    if not self.doMeshesCollide(meshA, meshB):
+      resultMesh = self.quickSolveBooleanOperation(meshA, meshB, operation)
+      outputModel.SetAndObservePolyData(resultMesh)
+      return
 
     # do subdivision to achieve same order of magnitude area per triangle ratio on both meshes
+    meshA, meshB = self.getMeshesWithSimilarAreaPerTriangle(meshA, meshB)
+
+    # TODO
+    # do the randomized translation
+    # self.applyRandomTranslationToPolydata(meshB, randomTranslationMagnitude)
+    # outputMesh = self.executeVtkboolFilter(operation, meshA, meshB, randomizedTranslation)
+    
+    randomizedTranslation = (
+      lambda dmesh: self.applyRandomTranslationToPolydata(dmesh, randomTranslationMagnitude)
+    )
 
     # select the backend filter or CLI
     if backend == "vtkbool":
-      outputMesh = self.executeVtkboolFilter(operation, meshA, meshB, randomizedTranslation)
-    elif backend == "geogram":
-      pass
-    elif backend == "manifold":
-      pass
-    elif backend == "blender":
-      pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      combine.Update()
-      outputModel.SetAndObservePolyData(combine.GetOutput())
-
-    else:
-      if not self.installBooleanOperationsAlternativeBackend():
-        return
-
-   
-      outputPolyData = vtk.vtkPolyData()
-      outputPolyData.DeepCopy(
-        self.meshBooleanOperationAlternative(operation, inputModelAPolyData, inputModelBPolyData, backend="manifold")
+      outputMesh = self.executeVtkboolFilter(
+        operation, meshA, meshB, numberOfRetries, randomizedTranslation
       )
-      outputModel.SetAndObservePolyData(outputPolyData)
+      outputModel.SetAndObservePolyData(outputMesh)
+      # The filter creates a few scalars, don't show them by default, as they would be somewhat distracting
+      outputModel.GetDisplayNode().SetScalarVisibility(False)
+      return
+    elif backend == "geogram":
+      outputMesh = self.executeGeogramFilter(
+        outputModel, operation, meshA, meshB, numberOfRetries, randomizedTranslation
+      )
+      return
     
-    outputModel.CreateDefaultDisplayNodes()
-    # The filter creates a few scalars, don't show them by default, as they would be somewhat distracting
-    outputModel.GetDisplayNode().SetScalarVisibility(False)
+    if not self.installBooleanOperationsAlternativeBackend():
+        return
+    if backend == "manifold":
+      outputMesh = self.executeManifoldFilter(
+        operation, meshA, meshB, numberOfRetries, randomizedTranslation
+      )
+      outputModel.SetAndObservePolyData(outputMesh)
+      return
+    elif backend == "blender":
+      outputMesh = self.executeBlenderFilter(
+        operation, meshA, meshB, numberOfRetries, randomizedTranslation
+      )
+      outputModel.SetAndObservePolyData(outputMesh)
+      return
 
     stopTime = time.time()
     logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
   
-  def process(self, inputModelA, inputModelB, outputModel, operation, backend="vtkbool"):
-    """
-    Run the processing algorithm.
-    Can be used without GUI widget.
-    :param inputModelA: first input model node
-    :param inputModelB: second input model node
-    :param outputModel: result model node, if empty then a new output node will be created
-    :param operation: union, intersection, difference, difference2
-    :param backend: vtkbool, manifold, blender
-    """
-
-    if not inputModelA or not inputModelB or not outputModel:
-      raise ValueError("Input or output model nodes are invalid")
-
-    import time
-    startTime = time.time()
-    logging.info('Processing started')
-
-    if backend == "vtkbool":
-      import vtkSlicerCombineModelsModuleLogicPython as vtkbool
-
-      combine = vtkbool.vtkPolyDataBooleanFilter()
-
-      if operation == 'union':
-        combine.SetOperModeToUnion()
-      elif operation == 'intersection':
-        combine.SetOperModeToIntersection()
-      elif operation == 'difference':
-        combine.SetOperModeToDifference()
-      elif operation == 'difference2':
-        combine.SetOperModeToDifference2()
-      else:
-        raise ValueError("Invalid operation: "+operation)
-
-      if inputModelA.GetParentTransformNode() == outputModel.GetParentTransformNode():
-        combine.SetInputConnection(0, inputModelA.GetPolyDataConnection())
-      else:
-        transformToOutput = vtk.vtkGeneralTransform()
-        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelA.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
-        transformer = vtk.vtkTransformPolyDataFilter()
-        transformer.SetTransform(transformToOutput)
-        transformer.SetInputConnection(inputModelA.GetPolyDataConnection())
-        combine.SetInputConnection(0, transformer.GetOutputPort())
-
-      if inputModelB.GetParentTransformNode() == outputModel.GetParentTransformNode():
-        combine.SetInputConnection(1, inputModelB.GetPolyDataConnection())
-      else:
-        transformToOutput = vtk.vtkGeneralTransform()
-        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelB.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
-        transformer = vtk.vtkTransformPolyDataFilter()
-        transformer.SetTransform(transformToOutput)
-        transformer.SetInputConnection(inputModelB.GetPolyDataConnection())
-        combine.SetInputConnection(1, transformer.GetOutputPort())
-
-      # These parameters might be useful to expose:
-      # combine.MergeRegsOn()  # default off
-      # combine.DecPolysOff()  # default on
-      combine.Update()
-      outputModel.SetAndObservePolyData(combine.GetOutput())
-
-    else:
-      if not self.installBooleanOperationsAlternativeBackend():
-        return
-
-      inputModelAPolyData = vtk.vtkPolyData()
-      if inputModelA.GetParentTransformNode() == outputModel.GetParentTransformNode():
-        inputModelAPolyData.DeepCopy(inputModelA.GetMesh())
-      else:
-        transformToOutput = vtk.vtkGeneralTransform()
-        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelA.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
-        transformer = vtk.vtkTransformPolyDataFilter()
-        transformer.SetTransform(transformToOutput)
-        transformer.SetInputConnection(inputModelA.GetPolyDataConnection())
-        transformer.Update()
-        inputModelAPolyData.DeepCopy(transformer.GetOutput())
-
-      inputModelBPolyData = vtk.vtkPolyData()
-      if inputModelB.GetParentTransformNode() == outputModel.GetParentTransformNode():
-        inputModelBPolyData.DeepCopy(inputModelB.GetMesh())
-      else:
-        transformToOutput = vtk.vtkGeneralTransform()
-        slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(inputModelB.GetParentTransformNode(), outputModel.GetParentTransformNode(), transformToOutput)
-        transformer = vtk.vtkTransformPolyDataFilter()
-        transformer.SetTransform(transformToOutput)
-        transformer.SetInputConnection(inputModelB.GetPolyDataConnection())
-        transformer.Update()
-        inputModelBPolyData.DeepCopy(transformer.GetOutput())
-
-      outputPolyData = vtk.vtkPolyData()
-      outputPolyData.DeepCopy(
-        self.meshBooleanOperationAlternative(operation, inputModelAPolyData, inputModelBPolyData, backend="manifold")
-      )
-      outputModel.SetAndObservePolyData(outputPolyData)
-    
-    outputModel.CreateDefaultDisplayNodes()
-    # The filter creates a few scalars, don't show them by default, as they would be somewhat distracting
-    outputModel.GetDisplayNode().SetScalarVisibility(False)
-
-    stopTime = time.time()
-    logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
-
   @staticmethod
   def installBooleanOperationsAlternativeBackend(force=False):
       # install required trimesh package
