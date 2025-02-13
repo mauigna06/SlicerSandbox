@@ -284,27 +284,18 @@
           </widget>
          </item>
          <item row="1" column="1">
-          <widget class="qMRMLSpinBox" name="randomTranslationMagnitudeSpinBox">
+          <widget class="QSpinBox" name="randomTranslationMagnitudeSpinBox">
            <property name="prefix">
             <string>1e</string>
            </property>
-           <property name="decimals">
-            <number>0</number>
-           </property>
            <property name="minimum">
-            <double>-5.000000000000000</double>
+            <number>-5</number>
            </property>
            <property name="maximum">
-            <double>0.000000000000000</double>
+            <number>0</number>
            </property>
            <property name="value">
-            <double>-4.000000000000000</double>
-           </property>
-           <property name="quantity">
-            <string notr="true">length</string>
-           </property>
-           <property name="unitAwareProperties">
-            <set>qMRMLSpinBox::MaximumValue|qMRMLSpinBox::MinimumValue|qMRMLSpinBox::Suffix</set>
+            <number>-4</number>
            </property>
           </widget>
          </item>
@@ -363,19 +354,9 @@
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>ctkDoubleSpinBox</class>
-   <extends>QWidget</extends>
-   <header>ctkDoubleSpinBox.h</header>
-  </customwidget>
-  <customwidget>
    <class>qMRMLNodeComboBox</class>
    <extends>QWidget</extends>
    <header>qMRMLNodeComboBox.h</header>
-  </customwidget>
-  <customwidget>
-   <class>qMRMLSpinBox</class>
-   <extends>ctkDoubleSpinBox</extends>
-   <header>qMRMLSpinBox.h</header>
   </customwidget>
   <customwidget>
    <class>qMRMLWidget</class>
