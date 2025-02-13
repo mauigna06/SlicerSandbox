@@ -156,6 +156,11 @@
         </item>
         <item>
          <property name="text">
+          <string>geogram</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
           <string>manifold</string>
          </property>
         </item>

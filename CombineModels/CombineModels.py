@@ -463,8 +463,66 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     
     return combine.GetOutput()
   
+  def executeGeogramCLIWithParameters(
+      self,
+      ModelA_ID,
+      ModelB_ID,
+      ResultingModel_ID,
+      BooleanOperation
+  ):
+    parameters = {}
+    parameters["ModelA"] = ModelA_ID
+    parameters["ModelB"] = ModelB_ID
+    parameters["ResultingModel"] = ResultingModel_ID
+    parameters["BooleanOperation"] = BooleanOperation
+
+    robustBooleanOperation = slicer.modules.geogrambooleanoperation
+    cliNode = slicer.cli.runSync(robustBooleanOperation, None, parameters)
+    # Process results
+    if cliNode.GetStatus() & cliNode.ErrorsMask:
+      # error
+      errorText = cliNode.GetErrorText()
+      slicer.mrmlScene.RemoveNode(cliNode)
+      raise ValueError("CLI execution failed: " + errorText)
+    # success
+    slicer.mrmlScene.RemoveNode(cliNode)
+  
   def executeGeogramFilter(self, outputModel, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
-    pass
+    # temporary models to store the polydata, they will be deleted after processing
+    modelsLogic = slicer.modules.models.logic()
+    modelACopy = modelsLogic.AddModel(meshA)
+    modelBCopy = modelsLogic.AddModel(meshB)
+
+    self.executeGeogramCLIWithParameters(
+      modelACopy.GetID(),
+      modelBCopy.GetID(),
+      outputModel.GetID(),
+      operation
+    )
+
+    resultIsValid = outputModel.GetPolyData().GetNumberOfPoints() > 0
+    if resultIsValid:
+      slicer.mrmlScene.RemoveNode(modelACopy)
+      slicer.mrmlScene.RemoveNode(modelBCopy)
+      return
+
+    if numberOfRetries >= 1:
+      for i in range(numberOfRetries):
+        modelBCopy.SetAndObservePolyData(randomizedTranslation(modelBCopy.GetPolyData()))
+        self.executeGeogramCLIWithParameters(
+          modelACopy.GetID(),
+          modelBCopy.GetID(),
+          outputModel.GetID(),
+          operation
+        )
+
+        resultIsValid = outputModel.GetPolyData().GetNumberOfPoints() > 0
+        if resultIsValid:
+          break
+    
+    slicer.mrmlScene.RemoveNode(modelACopy)
+    slicer.mrmlScene.RemoveNode(modelBCopy)
+    return
   
   def executeManifoldFilter(self, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
     result = self.meshBooleanOperationAlternative(operation, meshA, meshB, backend="manifold")
@@ -525,9 +583,9 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     if not inputModelA or not inputModelB or not outputModel:
       raise ValueError("Input or output model nodes are invalid")
 
-    import time
-    startTime = time.time()
-    logging.info('Processing started')
+    #import time
+    #startTime = time.time()
+    #logging.info('Processing started')
 
     # check if operation is valid
     if operation not in ['union','intersection','difference','difference2']:
@@ -553,11 +611,6 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
 
     # do subdivision to achieve same order of magnitude area per triangle ratio on both meshes
     meshA, meshB = self.getMeshesWithSimilarAreaPerTriangle(meshA, meshB)
-
-    # TODO
-    # do the randomized translation
-    # self.applyRandomTranslationToPolydata(meshB, randomTranslationMagnitude)
-    # outputMesh = self.executeVtkboolFilter(operation, meshA, meshB, randomizedTranslation)
     
     randomizedTranslation = (
       lambda dmesh: self.applyRandomTranslationToPolydata(dmesh, randomTranslationMagnitude)
@@ -573,7 +626,7 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
       outputModel.GetDisplayNode().SetScalarVisibility(False)
       return
     elif backend == "geogram":
-      outputMesh = self.executeGeogramFilter(
+      self.executeGeogramFilter(
         outputModel, operation, meshA, meshB, numberOfRetries, randomizedTranslation
       )
       return
@@ -593,8 +646,8 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
       outputModel.SetAndObservePolyData(outputMesh)
       return
 
-    stopTime = time.time()
-    logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
+    #stopTime = time.time()
+    #logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
   
   @staticmethod
   def installBooleanOperationsAlternativeBackend(force=False):
