@@ -294,6 +294,102 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     if not parameterNode.GetParameter("Backend"):
       parameterNode.SetParameter("Backend", "vtkbool")
 
+  def getInputModelMeshInOutputModelCoordinateSystem(self, inputModelNode, outputModelNode):
+      transformToOutput = vtk.vtkGeneralTransform()
+      slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(
+        inputModelNode.GetParentTransformNode(), 
+        outputModelNode.GetParentTransformNode(), 
+        transformToOutput
+      )
+      transformer = vtk.vtkTransformPolyDataFilter()
+      transformer.SetTransform(transformToOutput)
+      transformer.SetInputConnection(inputModelNode.GetMesh())
+      transformer.Update()
+      return transformer.GetOutput()
+  
+  def process(self, inputModelA, inputModelB, outputModel, operation, backend="vtkbool"):
+    """
+    Run the processing algorithm.
+    Can be used without GUI widget.
+    :param inputModelA: first input model node
+    :param inputModelB: second input model node
+    :param outputModel: result model node, if empty then a new output node will be created
+    :param operation: union, intersection, difference, difference2
+    :param backend: vtkbool, geogram, manifold, blender
+    """
+
+    if not inputModelA or not inputModelB or not outputModel:
+      raise ValueError("Input or output model nodes are invalid")
+
+    import time
+    startTime = time.time()
+    logging.info('Processing started')
+
+    
+    # check if operation is valid
+    if operation not in ['union','intersection','difference','difference2']:
+      raise ValueError("Invalid operation: "+operation)
+    
+    # swap input models for difference2 operation
+    if operation == 'difference2':
+        inputModelA, inputModelB = inputModelB, inputModelA
+
+    # meshes to be combined
+    meshA = self.getInputModelMeshInOutputModelCoordinateSystem(inputModelA, outputModel)
+    meshB = self.getInputModelMeshInOutputModelCoordinateSystem(inputModelB, outputModel)
+
+
+
+    # do the randomized translation
+
+
+
+    # do subdivision to achieve same order of magnitude area per triangle ratio on both meshes
+
+    # select the backend filter or CLI
+    if backend == "vtkbool":
+      outputMesh = self.executeVtkboolFilter(operation, meshA, meshB, randomizedTranslation)
+    elif backend == "geogram":
+      pass
+    elif backend == "manifold":
+      pass
+    elif backend == "blender":
+      pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      combine.Update()
+      outputModel.SetAndObservePolyData(combine.GetOutput())
+
+    else:
+      if not self.installBooleanOperationsAlternativeBackend():
+        return
+
+   
+      outputPolyData = vtk.vtkPolyData()
+      outputPolyData.DeepCopy(
+        self.meshBooleanOperationAlternative(operation, inputModelAPolyData, inputModelBPolyData, backend="manifold")
+      )
+      outputModel.SetAndObservePolyData(outputPolyData)
+    
+    outputModel.CreateDefaultDisplayNodes()
+    # The filter creates a few scalars, don't show them by default, as they would be somewhat distracting
+    outputModel.GetDisplayNode().SetScalarVisibility(False)
+
+    stopTime = time.time()
+    logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
+  
   def process(self, inputModelA, inputModelB, outputModel, operation, backend="vtkbool"):
     """
     Run the processing algorithm.
