@@ -265,6 +265,7 @@ class CombineModelsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       # Add a new node for output, if no output node is selected
       if not self._parameterNode.GetNodeReference("OutputModel"):
         outputModel = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode")
+        outputModel.CreateDefaultDisplayNodes()
         self._parameterNode.SetNodeReferenceID("OutputModel", outputModel.GetID())
 
       # Compute output
@@ -437,7 +438,8 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     numberOfRetries=0, 
     randomizedTranslation=None
   ):
-    combine = vtk.vtkPolyDataBooleanFilter()
+    import vtkSlicerCombineModelsModuleLogicPython as vtkbool
+    combine = vtkbool.vtkPolyDataBooleanFilter()
     if operation == 'union':
       combine.SetOperModeToUnion()
     elif operation == 'intersection':
@@ -537,7 +539,7 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     
     return result
   
-  def executeManifoldFilter(self, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
+  def executeBlenderFilter(self, operation, meshA, meshB, numberOfRetries=0, randomizedTranslation=None):
     result = self.meshBooleanOperationAlternative(operation, meshA, meshB, backend="blender")
     if result.GetNumberOfPoints() > 0:
       return result
@@ -651,43 +653,43 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
   
   @staticmethod
   def installBooleanOperationsAlternativeBackend(force=False):
-      # install required trimesh package
-      try:
-          import trimesh
-      except ModuleNotFoundError as e:
-          if force or slicer.util.confirmOkCancelDisplay("This function requires 'trimesh' Python package. Click OK to install it now."):
-              slicer.util.pip_install("trimesh")
-          else:
-              return False
-          
-      # install required manifold3d package
-      try:
-          import manifold3d
-      except ModuleNotFoundError as e:
-          if force or slicer.util.confirmOkCancelDisplay("This function requires 'manifold3d' Python package. Click OK to install it now."):
-              slicer.util.pip_install("manifold3d") # needs c++ compilation
-          else:
-              return False
-          
-      # install required networkx package
-      try:
-          import networkx
-      except ModuleNotFoundError as e:
-          if force or slicer.util.confirmOkCancelDisplay("This function requires 'networkx' Python package. Click OK to install it now."):
-              slicer.util.pip_install("networkx")
-          else:
-              return False
+    # install required trimesh package
+    try:
+      import trimesh
+    except ModuleNotFoundError as e:
+      if force or slicer.util.confirmOkCancelDisplay("This function requires 'trimesh' Python package. Click OK to install it now."):
+        slicer.util.pip_install("trimesh")
+      else:
+        return False
       
-      # install required pyvista package
-      try:
-          import pyvista
-      except ModuleNotFoundError as e:
-          if force or slicer.util.confirmOkCancelDisplay("This function requires 'pyvista' Python package. Click OK to install it now."):
-              slicer.util.pip_install("pyvista")
-          else:
-              return False
+    # install required manifold3d package
+    try:
+      import manifold3d
+    except ModuleNotFoundError as e:
+      if force or slicer.util.confirmOkCancelDisplay("This function requires 'manifold3d' Python package. Click OK to install it now."):
+        slicer.util.pip_install("manifold3d") # needs c++ compilation
+      else:
+        return False
       
-      return True
+    # install required networkx package
+    try:
+      import networkx
+    except ModuleNotFoundError as e:
+      if force or slicer.util.confirmOkCancelDisplay("This function requires 'networkx' Python package. Click OK to install it now."):
+        slicer.util.pip_install("networkx")
+      else:
+        return False
+    
+    # install required pyvista package
+    try:
+      import pyvista
+    except ModuleNotFoundError as e:
+      if force or slicer.util.confirmOkCancelDisplay("This function requires 'pyvista' Python package. Click OK to install it now."):
+        slicer.util.pip_install("pyvista")
+      else:
+        return False
+    
+    return True
   
   def toTrimesh(self, polyData, doRepairMesh=True):
     """
@@ -696,14 +698,14 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
     import pyvista as pv
     pv_mesh = pv.PolyData(polyData)
     pv_mesh = pv_mesh.extract_surface().triangulate()
-    faces_as_array = pv_mesh.faces.reshape((pv_mesh.n_faces, 4))[:, 1:]
+    faces_as_array = pv_mesh.faces.reshape((pv_mesh.n_cells, 4))[:, 1:]
     import trimesh
     mesh = trimesh.Trimesh(pv_mesh.points, faces_as_array)
     if doRepairMesh:
         mesh.remove_duplicate_faces()
         mesh.remove_unreferenced_vertices()
         mesh.remove_degenerate_faces()
-        mesh.fill_holes()
+        #mesh.fill_holes()
         mesh.fix_normals()
     return mesh
 
@@ -729,7 +731,10 @@ class CombineModelsLogic(ScriptedLoadableModuleLogic):
         backend = "manifold"
 
     import pyvista as pv
-    return pv.wrap(op(meshes, engine=backend, check_volume=False))
+    # https://github.com/mikedh/trimesh/issues/2253 there is a problem here
+    kwargs = {}
+    kwargs["check_volume"] = False
+    return pv.wrap(op(meshes, engine=backend, check_volume=False, kwargs=kwargs))
 
 #
 # CombineModelsTest
@@ -784,6 +789,7 @@ class CombineModelsTest(ScriptedLoadableModuleTest):
 
     for operation in ['union', 'intersection', 'difference', 'difference2']:
       outputModel = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", 'Output '+operation)
+      outputModel.CreateDefaultDisplayNodes()
       logic.process(inputModelA, inputModelB, outputModel, operation)
       self.assertTrue(outputModel.GetPolyData().GetNumberOfPoints()>0)
 
