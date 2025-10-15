@@ -32,10 +32,13 @@ limitations under the License.
 #include <vtkModifiedBSPTree.h>
 #include <vtkMatrixToLinearTransform.h>
 #include <vtkMatrix4x4.h>
+#include <vtkSmartPointer.h>
 
 #include "Contact.h"
 
 #include "Utilities.h"
+
+class vtkStaticPointLocator;
 
 enum OperMode {
     OPER_NONE = 0,
@@ -180,6 +183,14 @@ class VTK_SLICER_COMBINEMODELS_MODULE_LOGIC_EXPORT vtkPolyDataBooleanFilter : pu
 
     PolyStripsType polyStripsA, polyStripsB;
 
+    struct LocatorCache {
+        vtkSmartPointer<vtkStaticPointLocator> Locator;
+        vtkPolyData *Data {nullptr};
+        vtkMTimeType BuiltTime {std::numeric_limits<vtkMTimeType>::max()};
+    };
+
+    LocatorCache pointLocators[2];
+
     void GetStripPoints (vtkPolyData *pd, vtkIdTypeArray *sources, PStrips &pStrips, IdsType &lines);
     bool GetPolyStrips (vtkPolyData *pd, vtkIdTypeArray *conts, vtkIdTypeArray *sources, PolyStripsType &polyStrips);
     bool CleanStrips ();
@@ -193,6 +204,9 @@ class VTK_SLICER_COMBINEMODELS_MODULE_LOGIC_EXPORT vtkPolyDataBooleanFilter : pu
     void AddAdjacentPoints (vtkPolyData *pd, vtkIdTypeArray *conts, PolyStripsType &polyStrips);
     void MergePoints (vtkPolyData *pd, PolyStripsType &polyStrips);
     bool CombineRegions ();
+
+    vtkStaticPointLocator* GetPointLocator (vtkPolyData *pd);
+    void ResetPointLocatorCache (vtkPolyData *pd = nullptr);
 
     int OperMode;
 

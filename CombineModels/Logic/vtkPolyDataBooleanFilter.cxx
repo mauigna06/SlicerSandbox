@@ -40,6 +40,7 @@ limitations under the License.
 #include <vtkIdList.h>
 #include <vtkAppendPolyData.h>
 #include <vtkKdTreePointLocator.h>
+#include <vtkStaticPointLocator.h>
 #include <vtkCleanPolyData.h>
 #include <vtkPolyDataConnectivityFilter.h>
 #include <vtkSmartPointer.h>
@@ -48,6 +49,7 @@ limitations under the License.
 #include <vtkKdTree.h>
 #include <vtkCellIterator.h>
 #include <vtkTransformPolyDataFilter.h>
+#include <vtkAbstractPointLocator.h>
 
 #include "vtkPolyDataBooleanFilter.h"
 
@@ -88,6 +90,7 @@ vtkPolyDataBooleanFilter::vtkPolyDataBooleanFilter () {
     timeMatrixA = 0;
     timeMatrixB = 0;
 
+    ResetPointLocatorCache();
 }
 
 vtkPolyDataBooleanFilter::~vtkPolyDataBooleanFilter () {
@@ -106,6 +109,74 @@ vtkPolyDataBooleanFilter::~vtkPolyDataBooleanFilter () {
     if (transforms[1] != nullptr) {
         transforms[1]->Delete();
     }
+}
+
+void vtkPolyDataBooleanFilter::ResetPointLocatorCache (vtkPolyData *pd) {
+    auto fullReset = [](LocatorCache &cache) {
+        cache.Locator = nullptr;
+        cache.Data = nullptr;
+        cache.BuiltTime = -1;
+    };
+
+    if (pd == nullptr) {
+        fullReset(this->pointLocators[0]);
+        fullReset(this->pointLocators[1]);
+        return;
+    }
+
+    for (auto &cache : this->pointLocators) {
+        if (cache.Data == pd) {
+            cache.BuiltTime = -1;
+        }
+    }
+}
+
+vtkStaticPointLocator* vtkPolyDataBooleanFilter::GetPointLocator (vtkPolyData *pd) {
+    LocatorCache *cache = nullptr;
+
+    if (pd == this->modPdA) {
+        cache = &this->pointLocators[0];
+    } else if (pd == this->modPdB) {
+        cache = &this->pointLocators[1];
+    }
+
+    if (cache == nullptr) {
+        static LocatorCache scratch;
+
+        if (!scratch.Locator) {
+            scratch.Locator = vtkSmartPointer<vtkStaticPointLocator>::New();
+        }
+
+        if (scratch.Data != pd) {
+            scratch.Locator->SetDataSet(pd);
+            scratch.Data = pd;
+            scratch.BuiltTime = -1;
+        }
+
+        if (scratch.BuiltTime != pd->GetMTime()) {
+            scratch.Locator->BuildLocator();
+            scratch.BuiltTime = pd->GetMTime();
+        }
+
+        return scratch.Locator;
+    }
+
+    if (!cache->Locator) {
+        cache->Locator = vtkSmartPointer<vtkStaticPointLocator>::New();
+    }
+
+    if (cache->Data != pd) {
+        cache->Locator->SetDataSet(pd);
+        cache->Data = pd;
+        cache->BuiltTime = -1;
+    }
+
+    if (cache->BuiltTime != pd->GetMTime()) {
+        cache->Locator->BuildLocator();
+        cache->BuiltTime = pd->GetMTime();
+    }
+
+    return cache->Locator;
 }
 
 int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformationVector **inputVector, vtkInformationVector *outputVector) {
@@ -188,6 +259,8 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
 
             modPdA->EditableOn();
             modPdB->EditableOn();
+
+            ResetPointLocatorCache();
 
             try {
                 contLines = contact->GetLines(modPdA, transforms[0], modPdB, transforms[1]);
@@ -1864,9 +1937,7 @@ void vtkPolyDataBooleanFilter::RestoreOrigPoints (vtkPolyData *pd, PolyStripsTyp
 
     pd->DeleteLinks(); pd->BuildLinks();
 
-    vtkKdTreePointLocator *loc = vtkKdTreePointLocator::New();
-    loc->SetDataSet(pd);
-    loc->BuildLocator();
+    vtkAbstractPointLocator *loc = this->GetPointLocator(pd);
 
     PolyStripsType::const_iterator itr;
     StripPtsType::const_iterator itr2;
@@ -1893,9 +1964,7 @@ void vtkPolyDataBooleanFilter::RestoreOrigPoints (vtkPolyData *pd, PolyStripsTyp
         }
     }
 
-    loc->FreeSearchStructure();
-    loc->Delete();
-
+    ResetPointLocatorCache(pd);
 }
 
 void vtkPolyDataBooleanFilter::DisjoinPolys (vtkPolyData *pd, PolyStripsType &polyStrips) {
@@ -1906,8 +1975,7 @@ void vtkPolyDataBooleanFilter::DisjoinPolys (vtkPolyData *pd, PolyStripsType &po
 
     pd->DeleteLinks(); pd->BuildLinks();
 
-    vtkKdTreePointLocator *loc = vtkKdTreePointLocator::New();
-    loc->SetDataSet(pd);
+    vtkAbstractPointLocator *loc = this->GetPointLocator(pd);
 
     struct Cmp {
         bool operator() (const StripPt &l, const StripPt &r) const {
@@ -1956,9 +2024,7 @@ void vtkPolyDataBooleanFilter::DisjoinPolys (vtkPolyData *pd, PolyStripsType &po
     cells->Delete();
     pts->Delete();
 
-    loc->FreeSearchStructure();
-    loc->Delete();
-
+    ResetPointLocatorCache(pd);
 }
 
 void vtkPolyDataBooleanFilter::ResolveOverlaps (vtkPolyData *pd, PolyStripsType &polyStrips) {
@@ -2114,6 +2180,7 @@ void vtkPolyDataBooleanFilter::ResolveOverlaps (vtkPolyData *pd, PolyStripsType 
         }
     }
 
+    ResetPointLocatorCache(pd);
 }
 
 void vtkPolyDataBooleanFilter::AddAdjacentPoints (vtkPolyData *pd, vtkIdTypeArray *conts, PolyStripsType &polyStrips) {
@@ -2132,9 +2199,7 @@ void vtkPolyDataBooleanFilter::AddAdjacentPoints (vtkPolyData *pd, vtkIdTypeArra
         }
     };
 
-    auto loc = vtkSmartPointer<vtkKdTreePointLocator>::New();
-    loc->SetDataSet(pd);
-    loc->BuildLocator();
+    vtkAbstractPointLocator *loc = this->GetPointLocator(pd);
 
     auto lines = vtkSmartPointer<vtkIdList>::New();
 
@@ -2298,10 +2363,9 @@ void vtkPolyDataBooleanFilter::AddAdjacentPoints (vtkPolyData *pd, vtkIdTypeArra
         }
     }
 
-    loc->FreeSearchStructure();
-
     pd->RemoveDeletedCells();
 
+    ResetPointLocatorCache(pd);
 }
 
 void vtkPolyDataBooleanFilter::MergePoints (vtkPolyData *pd, PolyStripsType &polyStrips) {
@@ -2315,8 +2379,7 @@ void vtkPolyDataBooleanFilter::MergePoints (vtkPolyData *pd, PolyStripsType &pol
 
     contLines->DeleteLinks(); contLines->BuildLinks();
 
-    auto loc = vtkSmartPointer<vtkKdTreePointLocator>::New();
-    loc->SetDataSet(pd);
+    vtkAbstractPointLocator *loc = this->GetPointLocator(pd);
 
     PolyStripsType::const_iterator itr;
     StripsType::const_iterator itr2;
@@ -2477,8 +2540,6 @@ void vtkPolyDataBooleanFilter::MergePoints (vtkPolyData *pd, PolyStripsType &pol
         }
 
     }
-
-    loc->FreeSearchStructure();
 
 }
 

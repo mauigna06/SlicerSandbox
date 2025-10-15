@@ -53,7 +53,7 @@ double ComputeNormal (vtkPoints *pts, double *n, vtkIdType num, const vtkIdType 
     return vtkMath::Normalize(n);
 }
 
-void FindPoints (vtkKdTreePointLocator *pl, const double *pt, vtkIdList *pts, double tol) {
+void FindPoints (vtkAbstractPointLocator *pl, const double *pt, vtkIdList *pts, double tol) {
     pts->Reset();
 
     vtkPolyData *pd = vtkPolyData::SafeDownCast(pl->GetDataSet());
