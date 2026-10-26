@@ -17,6 +17,9 @@ set(${KIT}_SRCS
 # public
   vtkPolyDataBooleanFilter.cxx
   vtkPolyDataBooleanFilter.h
+# octree backend, which only needs VTK
+  vtkOctreeBooleanFilter.cxx
+  vtkOctreeBooleanFilter.h
   )
 
 set_source_files_properties(
